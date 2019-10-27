@@ -1,0 +1,302 @@
+---
+title: "Airbnb in Berlin"
+author: "Florian Bliefert"
+date: "24 10 2019"
+output: html_document
+---
+
+```{r echo = FALSE, message = FALSE}
+library(tidyverse)
+library(lubridate)
+library(leaflet)
+library(knitr)
+library(plotly)
+library(Metrics)
+library(caret)
+```
+
+
+## Daten einlesen
+
+Das komplette Datenset kann [hier](https://www.kaggle.com/brittabettendorf/berlin-airbnb-data) von Kaggle.com heruntergeladen werden. In dem Datenset sind zwei Dateien `calender_summary.csv` und `listings.csv`, die Daten von über Airbnb vermittelten Appartments enthalten. In `calender_summary.csv` sind die Tagespreise der einzelnen Appartmentes gespeichert, in `listings.csv` die Informationen zu den Appartments selbst.
+
+```{r echo = FALSE, message = FALSE}
+calendar_summary <- read_csv("calendar_summary.csv")
+listings <- read_csv("listings.csv")
+```
+
+```{r}
+head(calendar_summary)
+head(listings)
+```
+
+Nach dem Einlesen wird der Datensatz bereinigt. Für den 11. November sind nur drei Appartments im Datensatz, daher wird dieser Tag ausgeklammert. Zusätzlich wird die Spalte `price` als Zahl formatiert.
+
+```{r}
+calendar_summary <- calendar_summary %>% 
+  mutate(price = as.numeric(gsub('\\$', '', price)),
+         listing_id = as.factor(listing_id)) %>% 
+  filter(date < ymd('2019-11-07'))
+
+listings <- listings %>% 
+  mutate(listing_id = as.factor(id),
+         host_id = as.factor(host_id),
+         neighbourhood_group = as.factor(neighbourhood_group),
+         neighbourhood = as.factor(neighbourhood),
+         room_type = as.factor(room_type)) %>% 
+  select(-id)
+```
+
+## Explorative Datenanalyse
+
+Der Datensatz enthält nun Daten von `{r} length(listings%listing_id %>% unique)` Appartments. In der explorativen Analyse können nun einige Fragen beantwortet werden.
+
+### Wie viele Angebote gibt es pro Neighbourhood?
+
+```{r}
+listings %>% 
+  group_by(neighbourhood) %>% 
+  summarise(count = n()) %>% 
+  arrange(desc(count)) %>% 
+  kable()
+```
+
+### Was ist der durchschnittliche Preis eines Apparments?
+
+```{r}
+g <- calendar_summary %>% 
+  group_by(date) %>% 
+  summarise(daily_mean = mean(price, na.rm = TRUE)) %>% 
+  ggplot(aes(x = date, y = daily_mean)) +
+  geom_line() +
+  labs(x = "Datum", y = "Durchschnittspreis pro Tag") +
+  theme_light() +
+  annotate("rect", xmin = ymd("2018-12-20"), xmax = ymd("2019-01-05"), ymin = 60, ymax = 120, fill = 'lightblue', alpha = 0.5)
+
+ggplotly(g)
+
+```
+
+Sehr deutlich kann man hier den Anstieg zum Jahreswechsel (der Zeitraum vom 20.12.2018 bis 05.01.2019 ist blau unterlegt) sehen, aber es ist auch eine gewisse Regelmäßigkeit in den Schwankungen zu erkennen. Das gleiche Muster wiederholt sich bei einer Auffächerung auf die verschiedenen Bezirke, nur auf unterschiedlichen Niveaus.
+
+```{r}
+g <- calendar_summary %>% 
+  inner_join(listings %>% 
+               select(listing_id, neighbourhood, neighbourhood_group),
+             by = 'listing_id') %>% 
+  select(-available) %>% 
+  group_by(date, neighbourhood_group) %>% 
+  summarise(mean = mean(price, na.rm = TRUE)) %>% 
+  ggplot(aes(x = date, y = mean, color = neighbourhood_group)) +
+  geom_line() +
+  labs(x = 'Datum', y = 'Durchschnittspreis pro Tag') +
+  theme_light() +
+  theme(legend.title = element_blank())
+
+ggplotly(g)
+
+```
+
+### Was sind die teuersten und billigsten Tage?
+
+Die durchschnittlichen Tagespreise über alle Angebote schwanken zwischen 72,01 und 117,11 Euro. Wann aber liegen die teuersten und billigsten fünf Tage?
+
+```{r}
+calendar_summary %>% 
+  group_by(date) %>% 
+  summarise(daily_mean = mean(price, na.rm = TRUE)) %>% 
+  summarise(max = max(daily_mean),
+            min = min(daily_mean)) %>% 
+  kable()
+
+calendar_summary %>% 
+  group_by(date) %>% 
+  summarise(daily_mean = mean(price, na.rm = TRUE)) %>% 
+  arrange(daily_mean) %>% 
+  top_n(-5, daily_mean) %>% 
+  kable()
+
+calendar_summary %>% 
+  group_by(date) %>% 
+  summarise(daily_mean = mean(price, na.rm = TRUE)) %>% 
+  arrange(desc(daily_mean)) %>% 
+  top_n(5, daily_mean) %>% 
+  kable()
+
+```
+
+Wenig überraschend liegen die teuersten fünf Tage um Silvester und die billigsten fünf Tage liegen in der unattraktiven Reisezeit Ende Januar bzw. Anfang Februar.
+
+### Welche sind die teuersten und billigsten Appartments?
+
+Diese Frage ist nicht so einfach zu beantworten. Ein einfaches Sortieren nach den höchsten bzw. niedrigsten Tagesdurchschnittspreisen liefert folgendes Ergebnis:
+
+```{r}
+t10_expensive <- calendar_summary %>% 
+        group_by(listing_id) %>% 
+        summarise(mean = mean(price, na.rm = TRUE)) %>% 
+  arrange(desc(mean)) %>% 
+  top_n(10, mean) %>% 
+  inner_join(listings %>% 
+               select(listing_id, latitude, longitude),
+             by = 'listing_id')
+
+t10_cheap <- calendar_summary %>% 
+  group_by(listing_id) %>% 
+  summarise(mean = mean(price, na.rm = TRUE)) %>% 
+  arrange(mean) %>% 
+  top_n(-10, mean) %>% 
+  inner_join(listings %>% 
+               select(listing_id, latitude, longitude),
+             by = 'listing_id')
+
+t10_expensive %>% 
+  select(listing_id, mean) %>% 
+  kable()
+t10_cheap %>% 
+  select(listing_id, mean) %>% 
+  kable()
+```
+
+Zumindest die teuersten Appartments scheinen Fehler im Datensatz zu sein, aber auch die billigsten Appartments erscheinen zu billig, um einen realistischen Preis abzubilden. Auch die geographische Verteilung der Appartments innerhalb Berlins lässt keine Regelmäßigkeit erkennen.
+
+```{r}
+icon_expensive <- makeAwesomeIcon(icon = 'home', markerColor = 'red', library = 'ion')
+icon_cheap <- makeAwesomeIcon(icon = 'home', markerColor = 'green', library = 'ion')
+
+m10 <- leaflet() %>% 
+  addTiles() %>% 
+  addAwesomeMarkers(lng = t10_expensive$longitude,
+             lat = t10_expensive$latitude,
+             popup = t10_expensive$mean,
+             icon = icon_expensive) %>% 
+  addAwesomeMarkers(lng = t10_cheap$longitude,
+             lat = t10_cheap$latitude,
+             popup = t10_cheap$mean,
+             icon = icon_cheap)
+m10
+
+```
+
+## Preis-Prediction-Model
+
+Die Informationen aus den zwei Datensätzen sollen nun genutzt werden, um einen Vorhersagealgorithmus für den Preis eines Appartments an einem bestimmten Datum zu entwickeln. Dazu wird zuerst ein gemeinsamer Datensatz erzeugt mit folgenden Variablen:
+
+* `listing_id`: Die ID des Appartments
+* `price`: Der jeweilige Tagespreis
+* `neighbourhood_group`: Stadtteil
+* `room_type`: Art der Unterbringung (Entire home/Private room/shared room)
+* `weekday`: Wochentag
+* `month`: Monat
+
+Die Datumsspalte wurde aufgeteilt in Monat und Wochentag, da dies die relevanten Informationen für den Algorithmus sind. Insgesamt ergeben sich so 1.797.069 Datensätze.
+
+```{r}
+df <- calendar_summary %>% 
+  inner_join(listings %>%
+               select(-name, -host_id, -host_name, -latitude, -longitude, -price, -minimum_nights, -number_of_reviews, -last_review, -reviews_per_month, -calculated_host_listings_count, -availability_365),
+             by = 'listing_id') %>% 
+  select(-available) %>% 
+  mutate(weekday = as.factor(weekdays(date))) %>%
+  mutate(month = as.factor(month(date))) %>%
+  select(-date, -neighbourhood) %>% # neighbourhood oder neighbourhood_group?
+  drop_na()
+
+```
+
+Wie oben gesehen gibt es in den Datensätzen Ausreißer und Fehleingaben. Damit das Modell nicht mit den falschen Daten trainiert wird, werden die Ausreißer entfernt. Dazu wird pro Stadtteil der jeweilige Preisdurchschnitt für den entsprechenden Tag kalkuliert und alles entfernt, was mehr als `RANGE` vom Mittelwert entfernt liegt. Hier wird ein Wert von 10% für `RANGE` verwendet.
+
+```{r}
+RANGE <- .1
+
+means <- df %>% 
+  group_by(neighbourhood_group) %>% # Hier muss noch datumsgenau gerechnet werden!
+  summarise(mean = mean(price)) %>% 
+  mutate(lower_bound = mean * (1 - RANGE)) %>% 
+  mutate(upper_bound = mean * (1 + RANGE))
+
+df <- df %>% 
+  inner_join(means, by = 'neighbourhood_group') %>% 
+  mutate(oob = ifelse(price < lower_bound | price > upper_bound, 'yes', 'no')) %>% 
+  filter(oob == 'no') %>% 
+  select(-mean, -lower_bound, -upper_bound, -oob)
+
+```
+
+Aufgrund der Größe des Datensatzes und um die Rechenzeit zu begrenzen wird mit einer Stichprobe von 2.000 Datensätzen gearbeitet.
+
+```{r}
+set.seed(1337)
+df_small <- sample_n(df, 2000)
+
+```
+
+Danach wird das kleine Datenset in Trainings- und Testdaten gesplittet.
+
+```{r}
+set.seed(1337)
+inTrain <- createDataPartition(df_small$price, p = 0.8, list = FALSE)
+training <- df_small[inTrain,]
+testing <- df_small[-inTrain,]
+
+```
+
+Damit werden nun drei verschiedene Modell trainiert:
+
+```{r}
+# Erklärung der Modell fehlt
+fit_control <- trainControl(method = 'cv')
+
+start_time <- Sys.time()
+fit_glm <- train(price ~ . -listing_id,
+                 trControl = fit_control,
+                 method = 'glm',
+                 data = training)
+
+fit_dtree <- train(price ~ . -listing_id,
+                   trControl = fit_control,
+                   method = 'rpart',
+                   data = training)
+
+fit_xgbtree <- train(price ~ . -listing_id,
+                     trControl = fit_control,
+                     method = 'xgbTree',
+                     tuneLength = 5,
+                     data = training)
+end_time <- Sys.time()
+time_taken <- end_time - start_time
+
+```
+
+Das Training der drei Modell hat `{r} time_taken ` gedauert. Die Performance dieser drei Modelle wird nun verglichen.
+
+```{r}
+res <- resamples(list(glm = fit_glm, dtree = fit_dtree, xgbtree = fit_xgbtree))
+res %>% bwplot(scales = 'free')
+
+```
+
+Auch in einer graphischen Darstellung kann die Qualität der Modelle bewertet werden.
+
+```{r}
+ans <- tibble(obs = testing$price,
+              pred_glm = predict(fit_glm, testing),
+              pred_dtree = predict(fit_dtree, testing),
+              pred_xgbtree = predict(fit_xgbtree, testing))
+
+ans %>% 
+  arrange(obs) %>% 
+  mutate(index = row_number(obs)) %>% 
+  gather(type, value, -index) %>% 
+  ggplot(aes(x = index, y = value, color = type)) + 
+  geom_point(alpha = .8) +
+  scale_y_continuous(labels = scales::comma)
+
+ans %>% 
+  summarise(mape_glm = mape(obs, pred_glm),
+            mape_dtree = mape(obs, pred_dtree),
+            mape_xgbtree = mape(obs, pred_xgbtree)) %>% 
+  kable()
+
+```
+
