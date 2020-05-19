@@ -2,7 +2,13 @@
 title: "Airbnb in Berlin"
 author: "Florian Bliefert"
 date: "24 10 2019"
-output: html_document
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: show
+    
 ---
 
 ```{r echo = FALSE, message = FALSE}
@@ -18,7 +24,7 @@ library(caret)
 
 ## Daten einlesen
 
-Das komplette Datenset kann [hier](https://www.kaggle.com/brittabettendorf/berlin-airbnb-data) von Kaggle.com heruntergeladen werden. In dem Datenset sind zwei Dateien `calender_summary.csv` und `listings.csv`, die Daten von über Airbnb vermittelten Appartments enthalten. In `calender_summary.csv` sind die Tagespreise der einzelnen Appartmentes gespeichert, in `listings.csv` die Informationen zu den Appartments selbst.
+Das komplette Datenset kann [hier](https://www.kaggle.com/brittabettendorf/berlin-airbnb-data) von Kaggle.com heruntergeladen werden. In dem Datenset sind zwei Dateien `calender_summary.csv` und `listings.csv`, die Daten von über Airbnb vermittelten Appartments enthalten. In `calender_summary.csv` sind 8.231.480 Tagespreise der einzelnen Appartmentes gespeichert, in `listings.csv` die Informationen zu 22.552 Appartments selbst.
 
 ```{r echo = FALSE, message = FALSE}
 calendar_summary <- read_csv("calendar_summary.csv")
@@ -57,8 +63,7 @@ Der Datensatz enthält nun Daten von `{r} length(listings%listing_id %>% unique)
 listings %>% 
   group_by(neighbourhood) %>% 
   summarise(count = n()) %>% 
-  arrange(desc(count)) %>% 
-  kable()
+  arrange(desc(count))
 ```
 
 ### Was ist der durchschnittliche Preis eines Apparments?
@@ -99,29 +104,26 @@ ggplotly(g)
 
 ### Was sind die teuersten und billigsten Tage?
 
-Die durchschnittlichen Tagespreise über alle Angebote schwanken zwischen 72,01 und 117,11 Euro. Wann aber liegen die teuersten und billigsten fünf Tage?
+Die durchschnittlichen Tagespreise über alle Angebote schwanken zwischen 72,01 und 117,11 Euro. Wo aber liegen die teuersten und billigsten fünf Tage?
 
 ```{r}
 calendar_summary %>% 
   group_by(date) %>% 
   summarise(daily_mean = mean(price, na.rm = TRUE)) %>% 
   summarise(max = max(daily_mean),
-            min = min(daily_mean)) %>% 
-  kable()
+            min = min(daily_mean))
 
 calendar_summary %>% 
   group_by(date) %>% 
   summarise(daily_mean = mean(price, na.rm = TRUE)) %>% 
   arrange(daily_mean) %>% 
-  top_n(-5, daily_mean) %>% 
-  kable()
+  top_n(-5, daily_mean)
 
 calendar_summary %>% 
   group_by(date) %>% 
   summarise(daily_mean = mean(price, na.rm = TRUE)) %>% 
   arrange(desc(daily_mean)) %>% 
-  top_n(5, daily_mean) %>% 
-  kable()
+  top_n(5, daily_mean)
 
 ```
 
@@ -151,11 +153,9 @@ t10_cheap <- calendar_summary %>%
              by = 'listing_id')
 
 t10_expensive %>% 
-  select(listing_id, mean) %>% 
-  kable()
+  select(listing_id, mean)
 t10_cheap %>% 
-  select(listing_id, mean) %>% 
-  kable()
+  select(listing_id, mean)
 ```
 
 Zumindest die teuersten Appartments scheinen Fehler im Datensatz zu sein, aber auch die billigsten Appartments erscheinen zu billig, um einen realistischen Preis abzubilden. Auch die geographische Verteilung der Appartments innerhalb Berlins lässt keine Regelmäßigkeit erkennen.
@@ -199,7 +199,7 @@ df <- calendar_summary %>%
   select(-available) %>% 
   mutate(weekday = as.factor(weekdays(date))) %>%
   mutate(month = as.factor(month(date))) %>%
-  select(-date, -neighbourhood) %>% # neighbourhood oder neighbourhood_group?
+  select(-date, -neighbourhood) %>%
   drop_na()
 
 ```
@@ -210,7 +210,7 @@ Wie oben gesehen gibt es in den Datensätzen Ausreißer und Fehleingaben. Damit 
 RANGE <- .1
 
 means <- df %>% 
-  group_by(neighbourhood_group) %>% # Hier muss noch datumsgenau gerechnet werden!
+  group_by(neighbourhood_group) %>%
   summarise(mean = mean(price)) %>% 
   mutate(lower_bound = mean * (1 - RANGE)) %>% 
   mutate(upper_bound = mean * (1 + RANGE))
@@ -227,7 +227,7 @@ Aufgrund der Größe des Datensatzes und um die Rechenzeit zu begrenzen wird mit
 
 ```{r}
 set.seed(1337)
-df_small <- sample_n(df, 2000)
+df_small <- sample_n(df, 20)
 
 ```
 
@@ -241,32 +241,48 @@ testing <- df_small[-inTrain,]
 
 ```
 
-Damit werden nun drei verschiedene Modell trainiert:
+### Training {.tabset}
+
+Damit werden nun drei verschiedene Modelle trainiert, ein einfaches lineares, dtree und xgbtree.
+```{r}
+fit_control <- trainControl(method = 'cv')
+```
+```{r echo = FALSE, message = FALSE}
+start_time <- Sys.time()
+```
+
+#### glm
 
 ```{r}
-# Erklärung der Modell fehlt
-fit_control <- trainControl(method = 'cv')
-
-start_time <- Sys.time()
 fit_glm <- train(price ~ . -listing_id,
                  trControl = fit_control,
                  method = 'glm',
                  data = training)
+```
 
+#### dtree
+```{r}
 fit_dtree <- train(price ~ . -listing_id,
                    trControl = fit_control,
                    method = 'rpart',
                    data = training)
+```
 
+#### xgbtree
+```{r}
 fit_xgbtree <- train(price ~ . -listing_id,
                      trControl = fit_control,
                      method = 'xgbTree',
                      tuneLength = 5,
                      data = training)
+```
+
+```{r echo = FALSE, message = FALSE}
 end_time <- Sys.time()
 time_taken <- end_time - start_time
-
 ```
+
+### Auswertung
 
 Das Training der drei Modell hat `{r} time_taken ` gedauert. Die Performance dieser drei Modelle wird nun verglichen.
 
@@ -295,8 +311,17 @@ ans %>%
 ans %>% 
   summarise(mape_glm = mape(obs, pred_glm),
             mape_dtree = mape(obs, pred_dtree),
-            mape_xgbtree = mape(obs, pred_xgbtree)) %>% 
-  kable()
+            mape_xgbtree = mape(obs, pred_xgbtree))
+```
 
+### Anwendung
+
+```{r}
+predictions_df <- tibble(neighbourhood_group = c('Tempelhof - Schöneberg','Tempelhof - Schöneberg'),
+                      room_type = c('Shared room','Shared room'),
+                      weekday = c('Sonntag','Montag'),
+                      month = c('3', '3'))
+predictions <- predict(fit_glm, predictions_df)
+predictions
 ```
 
