@@ -1,17 +1,16 @@
 ---
 title: "Airbnb in Berlin"
 author: "Florian Bliefert"
-date: "24 10 2019"
+date: "24 08 2020"
 output: 
   html_document:
     toc: true
     toc_float: true
     df_print: paged
-    code_folding: show
     
 ---
 
-```{r echo = FALSE, message = FALSE}
+```{r, echo = FALSE, message = FALSE}
 library(tidyverse)
 library(lubridate)
 library(leaflet)
@@ -19,76 +18,144 @@ library(knitr)
 library(plotly)
 library(Metrics)
 library(caret)
+start_document <- Sys.time();
 ```
 
+Ich möchte hier das Vorgehen eines Data Scientisten anhand eines Beispiels zeigen. Dazu habe ich einen Datensatz über AirBnB-Vermietungen in Berlin mit der Software R untersucht und die einzelnen Schritte in einem R-Markdown Dokument festgehalten, dem Standardwerkzeug für reproduzierbare Datenanalysen.
+
+Das komplette Datenset kann auf [www.kaggle.com](https://www.kaggle.com/brittabettendorf/berlin-airbnb-data) heruntergeladen werden. In dem Datenset sind unter anderem zwei Dateien `calender_summary.csv` und `listings.csv`, die Daten von über Airbnb vermittelte Appartments enthalten. 
+
+Diese Daten werden zuerst eingelesen, dann bereinigt und darauf folgt die explorative Datenanalyse (EDA). Hier werden einige Fragen zum Datensatz beantwortet, aber auch viele Fragen aufgeworfen, die wieder mit einer EDA beantworten werden müssten. Explorative Analyse ist in der täglichen Arbeit tatsächlich iterativ.
+
+Im Anschluss folgt das Training eines einfachen machine-learning-Modells, um Preise für die AirBnB-Appartments vorhersagen zu können. 
 
 ## Daten einlesen
 
-Das komplette Datenset kann [hier](https://www.kaggle.com/brittabettendorf/berlin-airbnb-data) von Kaggle.com heruntergeladen werden. In dem Datenset sind zwei Dateien `calender_summary.csv` und `listings.csv`, die Daten von über Airbnb vermittelten Appartments enthalten. In `calender_summary.csv` sind 8.231.480 Tagespreise der einzelnen Appartmentes gespeichert, in `listings.csv` die Informationen zu 22.552 Appartments selbst.
+Zuerst werden beide Dateien in R eingelesen und wir verschaffen uns einen ersten Überblick. Wir beginnen mit `calender_summary.csv`.
 
-```{r echo = FALSE, message = FALSE}
+```{r, message = FALSE}
 calendar_summary <- read_csv("calendar_summary.csv")
-listings <- read_csv("listings.csv")
+head(calendar_summary)
 ```
 
+In `calender_summary.csv` sind 8.231.480 Preise für diverse Appartments und Tage gespeichert. Auf den ersten Blick fällt auf, dass Preisangaben fehlen. Wie viele genau, liefert ein kurzes R-Statement:
+
 ```{r}
-head(calendar_summary)
+sum(is.na(calendar_summary$price))
+```
+
+Damit würden von über acht Millionen Datenpunkten nur noch knapp zwei Millionen übrig bleiben. Ist zwar immer noch mehr als Excel verarbeiten kann, aber trotzdem ein erschreckend hoher Anteil. Eventuell sind die Preise aber auch nicht vorhanden, da die Appartments nicht buchbar sind? Um das zu überprüfen, schauen wir, wieviele `NA` wir für verfügbare Appartments haben:
+
+```{r}
+calendar_summary %>% filter(available == "TRUE") %>% 
+  summarise(count = sum(is.na(price)))
+```
+
+Es gibt also keine Datensätze, bei denen das Appartment verfügbar und kein Preis hinterlegt ist. Das beruhigt und das Vertrauen in den Datensatz ist wiederhergestellt.
+
+Nun brauchen wir noch die Stammdaten für die Appartments, die in der Spalte `id` kodiert sind.
+
+```{r, message = FALSE}
+listings <- read_csv("listings.csv")
 head(listings)
 ```
 
-Nach dem Einlesen wird der Datensatz bereinigt. Für den 11. November sind nur drei Appartments im Datensatz, daher wird dieser Tag ausgeklammert. Zusätzlich wird die Spalte `price` als Zahl formatiert.
+Es sind Daten für 22.552 Appartments vorhanden, ein kurzer Quercheck zeigt uns, dass es auch 22.552 einzigartige IDs in `calender_summary` gibt, die beiden Datensätze passen also nahtlos zusammen.
 
 ```{r}
+length(unique(calendar_summary$listing_id))
+```
+
+## Preprocessing
+
+Nun folgen ein paar Vorbereitungen, um den Datensatz nachher gut zu bearbeiten und visualisieren zu können. Die Preise sind in Dollar und mit dem Währungskennzeichen `$` gespeichert. Das wird entfernt und die `listing_id` als Faktor anstatt Zahl formatiert und in `id` umbenannt. Auch die verschiedenen Variablen in `listings` werden als Faktor formatiert.
+
+```{r, warning = FALSE}
 calendar_summary <- calendar_summary %>% 
   mutate(price = as.numeric(gsub('\\$', '', price)),
-         listing_id = as.factor(listing_id)) %>% 
-  filter(date < ymd('2019-11-07'))
-
+         id = as.factor(listing_id))
 listings <- listings %>% 
-  mutate(listing_id = as.factor(id),
+  mutate(id = as.factor(id),
          host_id = as.factor(host_id),
          neighbourhood_group = as.factor(neighbourhood_group),
          neighbourhood = as.factor(neighbourhood),
-         room_type = as.factor(room_type)) %>% 
-  select(-id)
+         room_type = as.factor(room_type))
+```
+
+Bei meinem ersten Durchlauf durch die explorative Analyse ist mir aufgefallen, dass die Datensammlung im November 2019 abreisst und noch ein paar verstreute Datenpunkte übrig bleiben - genauer gesagt jeweils drei am 07 und 08. November.
+
+```{r, message = FALSE}
+calendar_summary %>% 
+  group_by(date) %>% 
+  summarise(count = n()) %>% 
+  ggplot(aes(x = date, y = count)) +
+    geom_line() +
+    labs(x = "Tag", y = "Anzahl Angebote") +
+    theme_light()
+
+calendar_summary %>% 
+  group_by(date) %>% 
+  summarise(count = n()) %>% 
+  filter(count < 20000)
+```
+
+Diese einzelnen Punkte würden die Analysen verfälschen, daher filtern wir die Tage ab dem 07.11.2019 heraus. Auch das ist normal bei der explorativen Datenanalyse, dass ein paar Schleifen gedreht werden. Es wäre eher ungewöhnlich, wenn man den Datensatz unmodifiziert direkt weiter verarbeiten könnte.
+
+```{r}
+calendar_summary <- calendar_summary %>%
+   filter(date < ymd('2019-11-07'))
 ```
 
 ## Explorative Datenanalyse
 
-Der Datensatz enthält nun Daten von `{r} length(listings%listing_id %>% unique)` Appartments. In der explorativen Analyse können nun einige Fragen beantwortet werden.
+In der explorativen Analyse spielen wir etwas mit den Daten herum und versuchen, ein paar Fragen zu beantworten. 
 
 ### Wie viele Angebote gibt es pro Neighbourhood?
 
-```{r}
+```{r, message = FALSE}
 listings %>% 
   group_by(neighbourhood) %>% 
   summarise(count = n()) %>% 
   arrange(desc(count))
 ```
 
-### Was ist der durchschnittliche Preis eines Apparments?
+### Was ist der durchschnittliche Preis eines Appartments?
 
-```{r}
+Dazu berechnen wir den durchschnittlichen Preis pro Tag ohne Berücksichtigung der `NA`s, das entspricht einem gewichteten Durchschnitt der verfügbaren Appartments.
+
+```{r, message = FALSE}
 g <- calendar_summary %>% 
   group_by(date) %>% 
   summarise(daily_mean = mean(price, na.rm = TRUE)) %>% 
   ggplot(aes(x = date, y = daily_mean)) +
-  geom_line() +
-  labs(x = "Datum", y = "Durchschnittspreis pro Tag") +
-  theme_light() +
-  annotate("rect", xmin = ymd("2018-12-20"), xmax = ymd("2019-01-05"), ymin = 60, ymax = 120, fill = 'lightblue', alpha = 0.5)
+    geom_line() +
+    labs(x = "Datum", y = "Durchschnittspreis pro Tag") +
+    theme_light() +
+    annotate("rect", xmin = ymd("2018-12-20"), xmax = ymd("2019-01-05"), ymin = 60, ymax = 120, fill = 'lightblue', alpha = 0.5)
 
 ggplotly(g)
-
 ```
 
-Sehr deutlich kann man hier den Anstieg zum Jahreswechsel (der Zeitraum vom 20.12.2018 bis 05.01.2019 ist blau unterlegt) sehen, aber es ist auch eine gewisse Regelmäßigkeit in den Schwankungen zu erkennen. Das gleiche Muster wiederholt sich bei einer Auffächerung auf die verschiedenen Bezirke, nur auf unterschiedlichen Niveaus.
+Sehr deutlich kann man hier den Anstieg zum Jahreswechsel (der Zeitraum vom 20.12.2018 bis 05.01.2019 ist blau unterlegt) sehen, aber es ist auch eine gewisse Regelmäßigkeit in den Schwankungen zu erkennen. Das sind vermutliche Schwankungen innerhalb der Woche - am Wochenende wird es teurer. Um das zu verifizieren, fügen wir dem Datensatz die Wochentage hinzu und berechnen den Durchschnittspreis pro Wochentag. Dabei ergibt sich wenig überraschend, dass Freitag und Samstag die teuersten Tage sind, während Montags die Preise am niedrigsten sind. Bei der Gelegenheit ergänzen wir auch gleich für später den jeweiligen Monat als Faktorvariable.
 
-```{r}
+```{r, message = FALSE}
+calendar_summary <- calendar_summary %>% 
+  mutate(weekday = as.factor(weekdays(date))) %>%
+  mutate(month = as.factor(month(date)))
+
+calendar_summary %>% 
+  group_by(weekday) %>% 
+  summarise(daily_mean = mean(price, na.rm = TRUE)) %>% 
+  arrange(daily_mean) 
+```
+
+Das gleiche Muster wiederholt sich bei einer Auffächerung der Appartments auf die verschiedenen Bezirke, nur auf unterschiedlichen Niveaus.
+
+```{r, message = FALSE}
 g <- calendar_summary %>% 
   inner_join(listings %>% 
-               select(listing_id, neighbourhood, neighbourhood_group),
-             by = 'listing_id') %>% 
+               select(id, neighbourhood, neighbourhood_group),
+             by = 'id') %>% 
   select(-available) %>% 
   group_by(date, neighbourhood_group) %>% 
   summarise(mean = mean(price, na.rm = TRUE)) %>% 
@@ -99,14 +166,13 @@ g <- calendar_summary %>%
   theme(legend.title = element_blank())
 
 ggplotly(g)
-
 ```
 
 ### Was sind die teuersten und billigsten Tage?
 
 Die durchschnittlichen Tagespreise über alle Angebote schwanken zwischen 72,01 und 117,11 Euro. Wo aber liegen die teuersten und billigsten fünf Tage?
 
-```{r}
+```{r, message = FALSE}
 calendar_summary %>% 
   group_by(date) %>% 
   summarise(daily_mean = mean(price, na.rm = TRUE)) %>% 
@@ -124,41 +190,40 @@ calendar_summary %>%
   summarise(daily_mean = mean(price, na.rm = TRUE)) %>% 
   arrange(desc(daily_mean)) %>% 
   top_n(5, daily_mean)
-
 ```
 
 Wenig überraschend liegen die teuersten fünf Tage um Silvester und die billigsten fünf Tage liegen in der unattraktiven Reisezeit Ende Januar bzw. Anfang Februar.
 
 ### Welche sind die teuersten und billigsten Appartments?
 
-Diese Frage ist nicht so einfach zu beantworten. Ein einfaches Sortieren nach den höchsten bzw. niedrigsten Tagesdurchschnittspreisen liefert folgendes Ergebnis:
+Diese Frage ist nicht so einfach zu beantworten. Ein einfaches Sortieren nach den höchsten bzw. niedrigsten Tagesdurchschnittspreisen liefert folgende Ergebnisse:
 
-```{r}
+```{r, message = FALSE}
 t10_expensive <- calendar_summary %>% 
-        group_by(listing_id) %>% 
+        group_by(id) %>% 
         summarise(mean = mean(price, na.rm = TRUE)) %>% 
   arrange(desc(mean)) %>% 
   top_n(10, mean) %>% 
   inner_join(listings %>% 
-               select(listing_id, latitude, longitude),
-             by = 'listing_id')
+               select(id, latitude, longitude),
+             by = 'id')
 
 t10_cheap <- calendar_summary %>% 
-  group_by(listing_id) %>% 
+  group_by(id) %>% 
   summarise(mean = mean(price, na.rm = TRUE)) %>% 
   arrange(mean) %>% 
   top_n(-10, mean) %>% 
   inner_join(listings %>% 
-               select(listing_id, latitude, longitude),
-             by = 'listing_id')
+               select(id, latitude, longitude),
+             by = 'id')
 
 t10_expensive %>% 
-  select(listing_id, mean)
+  select(id, mean)
 t10_cheap %>% 
-  select(listing_id, mean)
+  select(id, mean)
 ```
 
-Zumindest die teuersten Appartments scheinen Fehler im Datensatz zu sein, aber auch die billigsten Appartments erscheinen zu billig, um einen realistischen Preis abzubilden. Auch die geographische Verteilung der Appartments innerhalb Berlins lässt keine Regelmäßigkeit erkennen.
+Zumindest die teuersten Appartments scheinen Fehler im Datensatz zu sein, aber auch die billigsten Appartments erscheinen zu billig, um einen realistischen Preis abzubilden. Auch die geographische Verteilung der Appartments innerhalb Berlins lässt keine Regelmäßigkeit erkennen. Auf der Karte sind die teuersten zehn Appartments mit roten Icons markiert, die billigsten mit grünen.
 
 ```{r}
 icon_expensive <- makeAwesomeIcon(icon = 'home', markerColor = 'red', library = 'ion')
@@ -175,38 +240,35 @@ m10 <- leaflet() %>%
              popup = t10_cheap$mean,
              icon = icon_cheap)
 m10
-
 ```
+
+Gerade in Verteilung von teuren und billigen Angeboten könnte man viel tiefer einsteigen, da gerade auf dem Immobilienmarkt die Lage extrem wichtig ist - manchmal kann sogar die falsche Straßenseite den Preis zerstören. Für eine genauere Analyse benötigt man jedoch tiefere Kenntnisse der Berliner Verhältnisse (*domain knowledge* oder Domänenwissen). Daran sieht man auch, dass Data Science aus einer Schnittmenge von IT-Fähigkeiten, Statistik-Fertigkeiten und Spezialwissen bestehen muss, wenn man den größten Nutzen daraus ziehen möchte.
 
 ## Preis-Prediction-Model
 
-Die Informationen aus den zwei Datensätzen sollen nun genutzt werden, um einen Vorhersagealgorithmus für den Preis eines Appartments an einem bestimmten Datum zu entwickeln. Dazu wird zuerst ein gemeinsamer Datensatz erzeugt mit folgenden Variablen:
+Die Informationen aus den Datensätzen sollen nun genutzt werden, um einen Vorhersagealgorithmus für den Preis eines Appartments an einem bestimmten Datum zu entwickeln. Dazu wird zuerst ein gemeinsamer Datensatz erzeugt mit folgenden Variablen:
 
-* `listing_id`: Die ID des Appartments
 * `price`: Der jeweilige Tagespreis
-* `neighbourhood_group`: Stadtteil
+* `neighbourhood_group`: Bezirk
 * `room_type`: Art der Unterbringung (Entire home/Private room/shared room)
 * `weekday`: Wochentag
 * `month`: Monat
 
-Die Datumsspalte wurde aufgeteilt in Monat und Wochentag, da dies die relevanten Informationen für den Algorithmus sind. Insgesamt ergeben sich so 1.797.069 Datensätze.
+Die Datumsspalte wurde oben bereits aufgeteilt in Monat und Wochentag, da dies die relevanten Informationen für den Algorithmus sind. Alle anderen Variablen werden aus den Daten entfernt, da sie für den Trainingsalgorithmus entweder nicht notwendig sind oder sogar das Training verfälschen. Zusätzlich werden alle `NA` aus dem zusammengeführten Datensatz entfernt. Insgesamt ergibt das 1.797.069 Datensätze.
 
 ```{r}
 df <- calendar_summary %>% 
   inner_join(listings %>%
                select(-name, -host_id, -host_name, -latitude, -longitude, -price, -minimum_nights, -number_of_reviews, -last_review, -reviews_per_month, -calculated_host_listings_count, -availability_365),
-             by = 'listing_id') %>% 
-  select(-available) %>% 
-  mutate(weekday = as.factor(weekdays(date))) %>%
-  mutate(month = as.factor(month(date))) %>%
-  select(-date, -neighbourhood) %>%
+             by = 'id') %>% 
+  select(-date, -neighbourhood, -available) %>%
   drop_na()
 
 ```
 
-Wie oben gesehen gibt es in den Datensätzen Ausreißer und Fehleingaben. Damit das Modell nicht mit den falschen Daten trainiert wird, werden die Ausreißer entfernt. Dazu wird pro Stadtteil der jeweilige Preisdurchschnitt für den entsprechenden Tag kalkuliert und alles entfernt, was mehr als `RANGE` vom Mittelwert entfernt liegt. Hier wird ein Wert von 10% für `RANGE` verwendet.
+Wie oben gesehen gibt es in den Datensätzen Ausreißer und Fehleingaben. Damit das Modell dadurch nicht verzerrt wird, werden die Ausreißer entfernt. Dazu wird pro Stadtteil der jeweilige Preisdurchschnitt für den entsprechenden Tag kalkuliert und alles entfernt, was mehr als `RANGE` vom Mittelwert entfernt liegt. Hier wird ein Wert von 10% für `RANGE` verwendet.
 
-```{r}
+```{r message = FALSE}
 RANGE <- .1
 
 means <- df %>% 
@@ -219,109 +281,92 @@ df <- df %>%
   inner_join(means, by = 'neighbourhood_group') %>% 
   mutate(oob = ifelse(price < lower_bound | price > upper_bound, 'yes', 'no')) %>% 
   filter(oob == 'no') %>% 
-  select(-mean, -lower_bound, -upper_bound, -oob)
+  select(-mean, -lower_bound, -upper_bound, -oob, -listing_id, -id)
 
 ```
 
-Aufgrund der Größe des Datensatzes und um die Rechenzeit zu begrenzen wird mit einer Stichprobe von 2.000 Datensätzen gearbeitet.
+Aufgrund der Größe des Datensatzes und um die Rechenzeit zu begrenzen ziehen wir eine zufällige Stichprobe von 2.000 Datensätzen. Dabei sorgt `set.seed` dafür, dass der Pseudo-Zufallsgenerator immer mit dem gleichen Wert initialisiert wird, um die Ergebnisse reproduzierbar zu machen.
 
 ```{r}
 set.seed(1337)
-df_small <- sample_n(df, 20)
-
+df_small <- sample_n(df, 2000)
 ```
 
 Danach wird das kleine Datenset in Trainings- und Testdaten gesplittet.
 
-```{r}
+```{r, warnings = FALSE, message = FALSE}
 set.seed(1337)
 inTrain <- createDataPartition(df_small$price, p = 0.8, list = FALSE)
 training <- df_small[inTrain,]
 testing <- df_small[-inTrain,]
-
 ```
 
-### Training {.tabset}
+### Training
 
-Damit werden nun drei verschiedene Modelle trainiert, ein einfaches lineares, dtree und xgbtree.
+Mit diesem Trainingsdaten wird nun ein einfaches multivariates lineares Modell trainiert. Das Modell soll lernen, anhand des Wochentags, Monats und des Bezirks den Preis eines Appartments vorherzusagen.
+
+```{r echo = FALSE, message = FALSE}
+start_training <- Sys.time()
+```
+
 ```{r}
 fit_control <- trainControl(method = 'cv')
-```
-```{r echo = FALSE, message = FALSE}
-start_time <- Sys.time()
-```
-
-#### glm
-
-```{r}
-fit_glm <- train(price ~ . -listing_id,
+fit_glm <- train(price ~ . ,
                  trControl = fit_control,
                  method = 'glm',
                  data = training)
 ```
 
-#### dtree
-```{r}
-fit_dtree <- train(price ~ . -listing_id,
-                   trControl = fit_control,
-                   method = 'rpart',
-                   data = training)
-```
-
-#### xgbtree
-```{r}
-fit_xgbtree <- train(price ~ . -listing_id,
-                     trControl = fit_control,
-                     method = 'xgbTree',
-                     tuneLength = 5,
-                     data = training)
-```
-
 ```{r echo = FALSE, message = FALSE}
-end_time <- Sys.time()
-time_taken <- end_time - start_time
+end_training <- Sys.time()
+time_training <- end_training - start_training
+time_document <- end_training - start_document
 ```
 
 ### Auswertung
 
-Das Training der drei Modell hat `{r} time_taken ` gedauert. Die Performance dieser drei Modelle wird nun verglichen.
+Das Training des Modells hat `r round(time_training,2)` Sekunden auf einem 2019er MacBook Air gedauert. Die Erstellung des gesamten Dokuments bis hierhin (einlesen der CSV-Dateien, formatieren der Datensätze, erstellen der Grafiken und Auswertungen) hat `r round(time_document,2)` Sekunden gedauert. Daran kann man schön sehen, dass R sehr schnell mit großen Datenmengen umgehen kann (wobei auch die 8 Mio. Datensätze noch nicht groß sind für R. So belegt der Rohdatensatz `calendar_summary` knapp 220 MB im Arbeitsspeicher). Jetzt überprüfen wir das Ergebnis des Trainings mit dem Testdatensatz. In dem Testdatensatz kennen wir die tatsächlichen Preise der Appartments und vergleichen die mit den vorhergesagten. Um die Qualität der Vorhersagen zu bewerten, verwenden wir den Mean Absolute Percentage Error (MAPE, (https://en.wikipedia.org/wiki/Mean_absolute_percentage_error)).
+
 
 ```{r}
-res <- resamples(list(glm = fit_glm, dtree = fit_dtree, xgbtree = fit_xgbtree))
-res %>% bwplot(scales = 'free')
-
+pred_price <- predict(fit_glm, testing)
+ans <- tibble(price = testing$price,
+              prediction = pred_price)
+with(ans, mape(price, prediction))
 ```
 
-Auch in einer graphischen Darstellung kann die Qualität der Modelle bewertet werden.
+Mit 0,04 liegt der MAPE sehr niedrig, die Vorhersagequalität ist also sehr gut. Das können wir auch gut graphisch darstellen, wenn wir die tatsächlichen Preise und die Vorhersagen in einem Diagramm zeichen.
 
-```{r}
-ans <- tibble(obs = testing$price,
-              pred_glm = predict(fit_glm, testing),
-              pred_dtree = predict(fit_dtree, testing),
-              pred_xgbtree = predict(fit_xgbtree, testing))
-
-ans %>% 
-  arrange(obs) %>% 
-  mutate(index = row_number(obs)) %>% 
+```{r, message = FALSE, warnings = FALSE}
+ans %>% arrange(price) %>% 
+  mutate(index = row_number(price)) %>% 
   gather(type, value, -index) %>% 
-  ggplot(aes(x = index, y = value, color = type)) + 
+  ggplot(aes(x = index, y = value, color = type)) +
   geom_point(alpha = .8) +
-  scale_y_continuous(labels = scales::comma)
-
-ans %>% 
-  summarise(mape_glm = mape(obs, pred_glm),
-            mape_dtree = mape(obs, pred_dtree),
-            mape_xgbtree = mape(obs, pred_xgbtree))
+  labs(x = "Datenpunkt", y = "Preis") +
+  theme_light() +
+  theme(legend.title = element_blank())
 ```
 
 ### Anwendung
 
+Jetzt können wir unser Modell verwenden. Dazu werden ihm die Parameter `neighbourhood_group`, `room_type`, `weekday` und `month` übergeben, also die Variablen, mit denen vorher trainiert wurde. Um das Prinzip zu verdeutlichen, lasse ich das Modell drei Tage im März für ein Appartment im Bezirk Tempelhof - Schöneberg vorhersagen.
+
 ```{r}
-predictions_df <- tibble(neighbourhood_group = c('Tempelhof - Schöneberg','Tempelhof - Schöneberg'),
-                      room_type = c('Shared room','Shared room'),
-                      weekday = c('Sonntag','Montag'),
-                      month = c('3', '3'))
+predictions_df <- tibble(neighbourhood_group = rep('Tempelhof - Schöneberg',3),
+                         room_type = rep('Shared room',3),
+                         weekday = c('Samstag', 'Sonntag','Montag'),
+                         month = rep('3', 3)) %>% 
+  mutate(neighbourhood_group = as.factor(neighbourhood_group),
+         room_type = as.factor(room_type),
+         weekday = as.factor(weekday),
+         month = as.factor(month))
 predictions <- predict(fit_glm, predictions_df)
 predictions
 ```
 
+Für eine praktische Anwendung müssten natürlich die Eingaben über ein schickes User Interface (UI) an das Modell geschickt werden anstatt hart codiert zu werden. Und auch die Ausgaben müssten ansprechend formatiert werden. Dann kann das Ganze zum Beispiel gut in eine Reisewebsite integriert werden oder das Interface mit anfragebezogenen Werbebanner gespickt werden. Anwendungen gibt es genug dafür.
+
+## Ausblick
+
+Man könnte noch viel tiefer in den Datensatz eintauchen und auch das Modell noch verfeinern mit z.B. verschiedenen Ausstattungsmerkmalen der Wohnungen. Ich wollte hier jedoch nur ein kleines Beispiel für eine EDA liefern, um das Vorgehen und die Denkweise dabei zu demonstrieren.
